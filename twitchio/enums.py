@@ -260,3 +260,9 @@ class RevocationReason(enum.Enum):
     NOTIFICATION_FAILURES_EXCEEDED = "notification_failures_exceeded"
     VERSION_REMOVED                = "version_removed"
     CHAT_USER_BANNED               = "chat_user_banned"
+
+
+class TokenIdentity(enum.StrEnum):
+    app  = enum.auto()
+    user = enum.auto()
+    dcf  = enum.auto()

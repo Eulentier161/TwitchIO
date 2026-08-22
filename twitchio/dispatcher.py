@@ -43,7 +43,7 @@ class EventDispatcher:
         self._listeners: ListenerMap = defaultdict(set)
         self._waiters: ListenerMap = defaultdict(set)
         self.__tasks: set[asyncio.Task[None]] = set()
-        
+
     def cleanup(self) -> None: ...
 
     def subscribe(self, *, name: str, listener: CB) -> None:
