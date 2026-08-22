@@ -21,6 +21,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .http.clients import Route
+
+
 __all__ = (
     "BadRequestError",
     "ForbiddenError",
@@ -46,13 +57,22 @@ class TwitchIOException(Exception): ...
 
 
 # HTTP
-class HTTPException(TwitchIOException): ...
+class HTTPException(TwitchIOException):
+    def __init__(
+        self, msg: str | None = None, /, *, route: Route, status: int | None = None, extras: Mapping[Any, Any] | None = None
+    ) -> None:
+        self.route = route
+        self.status = status
+        self.extras = extras
+        super().__init__(msg)
 
 
 class TwitchServerError(HTTPException): ...
 
 
-class MissingTokenError(HTTPException): ...
+class MissingTokenError(HTTPException):
+    def __init__(self, msg: str | None = None, /, *, route: Route) -> None:
+        super().__init__(msg, route=route)
 
 
 class UnauthorizedError(HTTPException): ...
