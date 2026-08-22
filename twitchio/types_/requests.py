@@ -28,8 +28,6 @@ from .eventsub import ShardUpdateTransport
 
 
 # ---- OAuth ----
-
-
 class OAuthClientCredentialsRequestT(TypedDict):
     client_id: str
     client_secret: str
@@ -57,6 +55,21 @@ class OAuthAuthFlowRequestT(TypedDict):
 
 
 # ---- Conduits ----
+type WebsocketStatusT = Literal[
+    "enabled",
+    "webhook_callback_verification_pending",
+    "webhook_callback_verification_failed",
+    "notification_failures_exceeded",
+    "websocket_disconnected",
+    "websocket_failed_ping_pong",
+    "websocket_received_inbound_traffic",
+    "websocket_internal_error",
+    "websocket_network_timeout",
+    "websocket_network_error",
+    "websocket_failed_to_reconnect",
+]
+
+
 class UpdateConduitsRequestT(TypedDict):
     id: str
     shard_count: int
@@ -73,3 +86,8 @@ class DeleteConduitsRequestT(TypedDict):
 class UpdateConduitsShardsRequestT(TypedDict):
     conduit_id: str
     shards: Sequence[ShardUpdateTransport]
+
+
+class GetConduitsShardsRequestT(TypedDict):
+    conduit_id: str
+    status: NotRequired[WebsocketStatusT]
