@@ -29,4 +29,5 @@ from typing import Required, TypedDict
 
 class ClientOptionsT(TypedDict, total=False):
     client_id: Required[str]
+    client_secret: str
     enable_raw_events: bool

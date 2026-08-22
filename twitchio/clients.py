@@ -40,7 +40,8 @@ class Client:
         # TODO: aiohttp.ClientSession Opt
 
         self._client_id: str = options.get("client_id")
-        self._http = HTTPClient(client_id=self._client_id)
+        self._client_secret: str | None = options.get("client_secret")
+        self._http = HTTPClient(client_id=self._client_id, client_secret=self._client_secret)
         self._events = EventDispatcher()
         self._sockets = WebsocketManager(self)
 
