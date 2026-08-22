@@ -26,11 +26,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import logging
 import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Unpack
+from typing import TYPE_CHECKING, Any, ClassVar, Unpack
 
+from ..enums import TokenIdentity
 from ..exceptions import *
+from ..utils import MISSING
 
 
 if TYPE_CHECKING:
@@ -38,9 +41,13 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientResponse
 
+    from twitchio.types_.responses import OAuthRefreshResponseT
+
     from ..types_.http import APIRequestKwargs, HTTPMethodT, ParamMappingInputT, ParamMappingT
     from .clients import HTTPClient
 
+
+LOGGER: logging.Logger = logging.getLogger(__name__)
 
 # Twitch Global Ratelimits (per token?)
 RL_RATE: float = 800.0
@@ -86,6 +93,7 @@ class Route:
         "packed",
         "params",
         "path",
+        "token",
         "token_for",
         "use_id",
     )
@@ -124,11 +132,11 @@ class Route:
 
         self._retries: int = REQUEST_RETRIES
         self.cost = cost
+        self.token: TokenContainer | None = None
 
     def __str__(self) -> str:
         return str(self._url)
 
-    # type: ignore[arg-type]
     def __repr__(self) -> str:
         return f"Route<{self.method}[{self.base_url}]>"
 
@@ -297,7 +305,7 @@ class TokenContainer:
     token: str
     refresh: str | None = None
     expires: int | None = None
-    identity: Literal["app", "user"] = "user"
+    identity: TokenIdentity = TokenIdentity.user
     user_id: str | None = None
 
     def __str__(self) -> str:
@@ -306,15 +314,43 @@ class TokenContainer:
     def __int__(self) -> int:
         return self.expires if self.expires is not None else -1
 
+    def update(self, data: OAuthRefreshResponseT) -> None:
+        self.token = data["access_token"]
+        self.refresh = data["refresh_token"]
+        self.expires = data["expires_in"]
+
 
 class RequestManager:
-    def __init__(self, client: HTTPClient, /, app_token: str, prefers_user: bool = False) -> None:
+    def __init__(self, client: HTTPClient, /, prefers_user: bool = False, is_dcf: bool = False) -> None:
         self._client = client
-        self._app_token = TokenContainer(bucket=Ratelimiter(burst=760), token=app_token, identity="app")
+        identity = TokenIdentity.dcf if is_dcf else TokenIdentity.app
+        self._app_token = TokenContainer(bucket=Ratelimiter(burst=760), token=self._client._app_token, identity=identity)
         self._prefers_user = prefers_user
         self._tokens: dict[str, TokenContainer] = {}
 
-    async def close(self) -> None: ...
+    async def setup(self) -> None:
+        app = self._app_token
+        if app.token is not MISSING or self._app_token.identity is TokenIdentity.dcf:
+            return
+
+        await self.fetch_app_token()
+
+    async def close(self) -> None:
+        LOGGER.debug("Gracefully closing %s.", type(self).__name__)
+
+    async def fetch_app_token(self) -> None:
+        if not self._client._client_secret or self._app_token.identity is TokenIdentity.dcf:
+            return
+
+        LOGGER.debug("Setting Client Credentials via %s.", type(self).__name__)
+
+        resp = await self._client.oauth_fetch_client_credentials(
+            client_id=self._client._client_id,
+            client_secret=self._client._client_secret,
+            grant_type="client_credentials",
+        )
+
+        self._app_token.token = resp.access_token
 
     async def handle_error_code(self, route: Route, /, *, resp: ClientResponse, status: int) -> int:
         # Twitch Server/CF/Gateway Error
@@ -325,43 +361,62 @@ class RequestManager:
 
             if sleep is None:
                 if status == 500:
-                    raise TwitchServerError  # TODO: ...
+                    raise TwitchServerError(route=route, status=status)
 
-                raise HTTPException  # TODO: ...
+                raise HTTPException(route=route, status=status)
 
             return sleep
 
         # We can't really handle this case; raise a specific error...
         elif status == 400:
-            raise BadRequestError  # TODO
+            raise BadRequestError(route=route, status=status)
 
         # If we get this it means the bucket has failed also...
         elif status == 429:
-            raise RatelimitedError  # TODO: ...
+            raise RatelimitedError(route=route, status=status)
 
         # Best case token is expired and successfully refreshed...
         # Worst case token is invalid/can't be refreshed and we re-raise
         elif status == 401 and not await self.handle_auth_error(route):
-            raise UnauthorizedError  # TODO ...
+            raise UnauthorizedError(route=route, status=status)
 
         # Token is not able to access the resource...
         elif status == 403:
-            raise ForbiddenError  # TODO: ...
+            raise ForbiddenError(route=route, status=status)
 
         # Some Twitch endpoints specifically return 404 for not found resources
         # We can handle this by telling the route should return 404...
         elif status == 404:
             if route.could_404:
-                raise NotFoundError  # TODO ...
+                raise NotFoundError(route=route, status=status)
 
-            raise HTTPException  # TODO ...
+            raise HTTPException(route=route, status=status)
 
         # Anything not covererd in this handler is generic...
-        raise HTTPException  # TODO: ...
+        raise HTTPException(route=route, status=status)
 
     async def handle_ratelimits(self, route: Route, /, *, resp: ClientResponse) -> bool: ...
 
-    async def handle_auth_error(self, route: Route, /) -> bool: ...
+    async def handle_auth_error(self, route: Route, /) -> bool:
+        if not route.token or not route.token.refresh:
+            return False
+
+        if route.token.identity == "app":
+            return False
+
+        if not self._client._client_secret:
+            return False  # TODO
+
+        resp = await self._client._oauth_refresh(
+            client_id=self._client._client_id,
+            client_secret=self._client._client_secret,
+            grant_type="refresh_token",
+            refresh_token=route.token.refresh,
+        )
+
+        route.token.update(resp)
+        self._tokens[route.token.user_id] = route.token  # type: ignore
+        return True
 
     def update_route(self, route: Route, /, extras: dict[str, Any]) -> TokenContainer | None:
         container: TokenContainer | None = None
@@ -382,8 +437,12 @@ class RequestManager:
             container = self._app_token
 
         if not container:
-            raise MissingTokenError("No valid token available for this request.")
+            raise MissingTokenError("No valid token available for this request.", route=route)
+
+        LOGGER.debug("Using token: ('%s' type: %s) for %r.", container.user_id, container.identity, route)
 
         headers["Authorization"] = f"Bearer {container.token}"
         route.update_headers(headers)
+        route.token = container
+
         return container
