@@ -41,6 +41,9 @@ from .routes import RequestManager, Route
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from twitchio.types_.eventsub import ShardData
     from twitchio.types_.requests import *
     from twitchio.types_.responses import *
 
@@ -50,11 +53,22 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class HTTPClient:
-    def __init__(self, *, session: aiohttp.ClientSession = MISSING, client_id: str, app_token: str = MISSING) -> None:
+    def __init__(
+        self,
+        *,
+        session: aiohttp.ClientSession = MISSING,
+        client_id: str,
+        client_secret: str | None,
+        app_token: str = MISSING,
+        is_dcf: bool = False,
+        prefers_user: bool = False,
+    ) -> None:
         self._session = session
         self._user_session: bool = session is not MISSING
         self._client_id = client_id
-        self._manager = RequestManager(self, app_token=app_token)
+        self._client_secret = client_secret
+        self._app_token = app_token
+        self._manager = RequestManager(self, is_dcf=is_dcf, prefers_user=prefers_user)
         self._has_setup: bool = False
 
         pyver = f"{sys.version_info[0]}.{sys.version_info[1]}"
@@ -69,13 +83,19 @@ class HTTPClient:
         if self._has_setup:
             return
 
-        self._has_setup = True
-
         if self._session is not MISSING:
             return
 
         self._session = aiohttp.ClientSession(headers=self.headers)
-        LOGGER.debug("Completed setup for %s.", type(self).__qualname__)
+        self._has_setup = True
+
+        try:
+            await self._manager.setup()
+        except Exception as e:
+            LOGGER.error(e, exc_info=e)
+            await self.close()
+        else:
+            LOGGER.debug("Completed setup for %s.", type(self).__qualname__)
 
     def cleanup(self) -> None:
         if not self._user_session and self._session.closed:
@@ -84,6 +104,8 @@ class HTTPClient:
         self._has_setup = False
 
     async def close(self) -> None:
+        LOGGER.debug("Gracefully closing %s.", type(self).__name__)
+
         if not self._user_session:
             await self._session.close()
 
@@ -95,7 +117,7 @@ class HTTPClient:
         text = await resp.text(encoding="UTF-8")
 
         try:
-            if resp.headers["content-type"] == "application/json":
+            if "application/json" in resp.headers["content-type"]:
                 return JSON_LOADS(text)
         except KeyError:
             pass
@@ -116,12 +138,16 @@ class HTTPClient:
             method = route.method
             url = route.url
 
+            LOGGER.debug("%s request: %r.", "Attempting" if not failed else "Re-attempting", route)
+
             try:
                 async with self._session.request(method, url, headers=route.headers, json=route.json or None) as resp:
                     limiter.update(resp.headers)
                     data = await self.json_or_text(resp)
-
                     status = resp.status
+
+                    LOGGER.debug("Received response (%s) for %r: %s", status, route, data)
+
                     if status == 204:
                         return
 
@@ -130,9 +156,9 @@ class HTTPClient:
 
                     if failed:
                         if failed != status:
-                            raise HTTPException from HTTPException  # TODO: ...
+                            raise HTTPException(route=route, status=status) from HTTPException(route=route, status=failed)
 
-                        raise HTTPException  # TODO ...
+                        raise HTTPException(route=route, status=status)
 
                     await self._manager.handle_error_code(route, resp=resp, status=status)
                     failed = status
@@ -156,9 +182,16 @@ class HTTPClient:
         # if isinstance(data, str):
         #     raise # TODO: ...
 
-    async def request_paginated(self, route: Route, *, type: ..., nested_key: str = MISSING) -> ...:
+    async def request_paginated(self, route: Route) -> AsyncIterator[Any]:
         while True:
-            await self.request_json(route)
+            resp = await self.request_json(route)
+            yield resp
+
+            cursor = (resp.get("pagination") or {}).get("cursor")  # type: ignore
+            if not cursor:
+                return
+
+            route.update_params({"after": cursor})
 
     @overload
     def build_model(self, model: type[ModelT], *, data: Any, key: None) -> ModelT: ...
@@ -193,12 +226,7 @@ class HTTPClient:
         # NOTE: 400 (Bad Request) is a custom payload response; invalid refresh_token
         # NOTE: client_secret is not required; public apps
         route = Route("POST", "oauth2/token", params=kwargs, use_id=True, encoded=True)
-
-        try:
-            return await self.request_json(route)
-        except BadRequestError:
-            # TODO: ...
-            raise
+        return await self.request_json(route)
 
     async def oauth_refresh(self, **kwargs: Unpack[OAuthRefreshRequestT]) -> OAuthRefreshPayload:
         resp = await self._oauth_refresh(**kwargs)
@@ -329,10 +357,14 @@ class HTTPClient:
         route = Route("DELETE", "eventsub/conduits", params=kwargs)
         return await self.request(route)
 
-    async def get_conduit_shards(self) -> ...: ...
+    # TODO: ...
+    async def _get_conduit_shards(self, **kwargs: Unpack[GetConduitsShardsRequestT]) -> AsyncIterator[ShardData]:
+        route = Route("GET", "eventsub/conduits/shards", params=kwargs)
+        async for resp in self.request_paginated(route):
+            yield resp
 
     async def _update_conduit_shards(self, **kwargs: Unpack[UpdateConduitsShardsRequestT]) -> UpdateConduitsShardsResponseT:
-        route = Route("PATCH", "eventsub/conduits/shards", could_404=True)
+        route = Route("PATCH", "eventsub/conduits/shards", could_404=True, params=kwargs)
         return await self.request_json(route)
 
     async def update_conduit_shards(self, **kwargs: Unpack[UpdateConduitsShardsRequestT]) -> UpdatedShardPayload:
