@@ -72,5 +72,5 @@ class UpdatedShardPayload(BaseModel):
     __slots__ = ("errors", "shards")
 
     def __init__(self, **data: Unpack[UpdateConduitsShardsResponseT]) -> None:
-        self.shards: list[ConduitShard] = [ConduitShard(**i) for i in data["data"]]
+        self.shards: list[ConduitShard] = [ConduitShard(**i, http_=self._http) for i in data["data"]]
         self.errors: list[UpdateConduitsShardsError] = data["errors"]

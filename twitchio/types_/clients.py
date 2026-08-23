@@ -35,3 +35,4 @@ class ClientOptionsT(TypedDict, total=False):
     enable_raw_events: bool
     session: ClientSession
     connector: TCPConnector
+    dcf: bool

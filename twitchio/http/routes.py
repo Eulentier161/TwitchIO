@@ -328,12 +328,18 @@ class RequestManager:
         self._prefers_user = prefers_user
         self._tokens: dict[str, TokenContainer] = {}
 
+        self._has_setup: bool = False
+
     async def setup(self) -> None:
+        if self._has_setup:
+            return
+
         app = self._app_token
         if app.token is not MISSING or self._app_token.identity is TokenIdentity.dcf:
             return
 
         await self.fetch_app_token()
+        self._has_setup = True
 
     async def close(self) -> None:
         LOGGER.debug("Gracefully closing %s.", type(self).__name__)

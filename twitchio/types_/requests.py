@@ -83,9 +83,14 @@ class DeleteConduitsRequestT(TypedDict):
     id: str
 
 
+class UpdateConduitsShardsShardT(TypedDict):
+    id: str
+    transport: ShardUpdateTransport
+
+
 class UpdateConduitsShardsRequestT(TypedDict):
     conduit_id: str
-    shards: Sequence[ShardUpdateTransport]
+    shards: Sequence[UpdateConduitsShardsShardT]
 
 
 class GetConduitsShardsRequestT(TypedDict):

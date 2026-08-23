@@ -64,8 +64,8 @@ class HTTPClient:
         is_dcf: bool = False,
         prefers_user: bool = False,
     ) -> None:
-        self._session = session
-        self._connector = connector
+        self.__session = session
+        self.__connector = connector
         self._user_session: bool = session is not MISSING
         self._client_id = client_id
         self._client_secret = client_secret
@@ -85,13 +85,13 @@ class HTTPClient:
         if self._has_setup:
             return
 
-        if self._session:
-            session = self._session
+        if self.__session:
+            session = self.__session
         else:
-            conn = self._connector if self._connector is not MISSING else aiohttp.TCPConnector(ttl_dns_cache=300, limit=0)
+            conn = self.__connector if self.__connector is not MISSING else aiohttp.TCPConnector(ttl_dns_cache=300, limit=0)
             session = aiohttp.ClientSession(connector=conn)
 
-        self._session = session
+        self.__session = session
         self._has_setup = True
 
         try:
@@ -103,8 +103,8 @@ class HTTPClient:
             LOGGER.debug("Completed setup for %s.", type(self).__qualname__)
 
     def cleanup(self) -> None:
-        if not self._user_session and self._session.closed:
-            self._session = MISSING
+        if not self._user_session and self.__session.closed:
+            self.__session = MISSING
 
         self._has_setup = False
 
@@ -112,7 +112,7 @@ class HTTPClient:
         LOGGER.debug("Gracefully closing %s.", type(self).__name__)
 
         if not self._user_session:
-            await self._session.close()
+            await self.__session.close()
 
         await self._manager.close()
         self.cleanup()
@@ -131,10 +131,6 @@ class HTTPClient:
 
     async def request(self, route: Route) -> Any:
         failed: int | None = None
-
-        if not self._has_setup:
-            await self.setup()
-
         container = self._manager.update_route(route, extras=self.headers) or self._manager._app_token
         limiter = container.bucket
         await limiter.acquire(route.cost)
@@ -146,7 +142,7 @@ class HTTPClient:
             LOGGER.debug("%s request: %r.", "Attempting" if not failed else "Re-attempting", route)
 
             try:
-                async with self._session.request(method, url, headers=route.headers, json=route.json or None) as resp:
+                async with self.__session.request(method, url, headers=route.headers, json=route.json or None) as resp:
                     limiter.update(resp.headers)
                     data = await self.json_or_text(resp)
                     status = resp.status
@@ -369,7 +365,10 @@ class HTTPClient:
             yield resp
 
     async def _update_conduit_shards(self, **kwargs: Unpack[UpdateConduitsShardsRequestT]) -> UpdateConduitsShardsResponseT:
-        route = Route("PATCH", "eventsub/conduits/shards", could_404=True, params=kwargs)
+        params = {"conduit_id": kwargs.pop("conduit_id")}
+        body = kwargs
+        route = Route("PATCH", "eventsub/conduits/shards", could_404=True, params=params, json=body)
+
         return await self.request_json(route)
 
     async def update_conduit_shards(self, **kwargs: Unpack[UpdateConduitsShardsRequestT]) -> UpdatedShardPayload:

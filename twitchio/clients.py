@@ -33,6 +33,8 @@ from .websockets import WebsocketManager
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .types_.clients import ClientOptionsT
 
 
@@ -40,6 +42,11 @@ class Client:
     def __init__(self, **options: Unpack[ClientOptionsT]) -> None:
         self._client_id: str = options.get("client_id")
         self._client_secret: str | None = options.get("client_secret")
+        self._dcf: bool = options.get("dcf", False)
+
+        if not self._dcf and not self._client_secret:
+            raise RuntimeError("Client must use a 'client_secret' when not set to 'dcf'.")
+
         session = options.get("session", MISSING)
         connector = options.get("connector", MISSING)
 
@@ -48,6 +55,7 @@ class Client:
             client_secret=self._client_secret,
             session=session,
             connector=connector,
+            is_dcf=self._dcf,
         )
         self._events = EventDispatcher()
         self._sockets = WebsocketManager(self)
@@ -74,22 +82,36 @@ class Client:
     async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
         await self.close()
 
-    def run(self) -> None:
+    async def start(self) -> None:
+        await self.login()
+        await self.__stop_event.wait()
+
+    async def login(self) -> None:
+        if not self._http._has_setup:
+            await self._http.setup()
+
+    def run(
+        self,
+        *,
+        debug: bool | None = None,
+        loop_factory: Callable[..., asyncio.AbstractEventLoop] | None = None,
+    ) -> None:
         async def runner() -> None:
             async with self:
                 await self.start()
 
         try:
-            asyncio.run(runner())
+            asyncio.run(runner(), debug=debug, loop_factory=loop_factory)
         except KeyboardInterrupt:
             pass
-
-    async def start(self) -> None:
-        await self.__stop_event.wait()
 
     async def close(self) -> None:
         if self._closed:
             return
+
+        await self._http.close()
+        await self._sockets.shutdown()
+        self._events.cleanup()
 
         self._closed = True
 
