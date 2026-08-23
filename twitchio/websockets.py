@@ -398,7 +398,7 @@ class Websocket:
         self._opened.set()
 
     def __repr__(self) -> str:
-        name = "Conduit" if self._shard_id else "Websocket"
+        name = "Conduit" if self._shard_id is not None else "Websocket"
         return f"{name}(session_id={self._session_id}, shard_id={self._shard_id})"
 
     @property
