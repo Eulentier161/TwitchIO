@@ -23,6 +23,8 @@ SOFTWARE.
 
 from typing import Required, TypedDict
 
+from aiohttp import ClientSession, TCPConnector
+
 
 # TODO: Discuss names of options...
 
@@ -31,3 +33,5 @@ class ClientOptionsT(TypedDict, total=False):
     client_id: Required[str]
     client_secret: str
     enable_raw_events: bool
+    session: ClientSession
+    connector: TCPConnector

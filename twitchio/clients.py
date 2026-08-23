@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Self, Unpack
 
 from .dispatcher import EventDispatcher
 from .http import HTTPClient
+from .utils import MISSING
 from .websockets import WebsocketManager
 
 
@@ -37,11 +38,17 @@ if TYPE_CHECKING:
 
 class Client:
     def __init__(self, **options: Unpack[ClientOptionsT]) -> None:
-        # TODO: aiohttp.ClientSession Opt
-
         self._client_id: str = options.get("client_id")
         self._client_secret: str | None = options.get("client_secret")
-        self._http = HTTPClient(client_id=self._client_id, client_secret=self._client_secret)
+        session = options.get("session", MISSING)
+        connector = options.get("connector", MISSING)
+
+        self._http = HTTPClient(
+            client_id=self._client_id,
+            client_secret=self._client_secret,
+            session=session,
+            connector=connector,
+        )
         self._events = EventDispatcher()
         self._sockets = WebsocketManager(self)
 

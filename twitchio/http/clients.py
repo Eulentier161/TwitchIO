@@ -57,6 +57,7 @@ class HTTPClient:
         self,
         *,
         session: aiohttp.ClientSession = MISSING,
+        connector: aiohttp.TCPConnector = MISSING,
         client_id: str,
         client_secret: str | None,
         app_token: str = MISSING,
@@ -64,6 +65,7 @@ class HTTPClient:
         prefers_user: bool = False,
     ) -> None:
         self._session = session
+        self._connector = connector
         self._user_session: bool = session is not MISSING
         self._client_id = client_id
         self._client_secret = client_secret
@@ -72,7 +74,7 @@ class HTTPClient:
         self._has_setup: bool = False
 
         pyver = f"{sys.version_info[0]}.{sys.version_info[1]}"
-        ua = "TwitchioClient (https://github.com/TwitchIO/TwitchIO {0}) Python/{1} aiohttp/{2}"
+        ua = "TwitchIOClient (https://github.com/TwitchIO/TwitchIO {0}) Python/{1} aiohttp/{2}"
         self.user_agent: str = ua.format(__version__, pyver, aiohttp.__version__)
 
     @cached_property
@@ -83,10 +85,13 @@ class HTTPClient:
         if self._has_setup:
             return
 
-        if self._session is not MISSING:
-            return
+        if self._session:
+            session = self._session
+        else:
+            conn = self._connector if self._connector is not MISSING else aiohttp.TCPConnector(ttl_dns_cache=300, limit=0)
+            session = aiohttp.ClientSession(connector=conn)
 
-        self._session = aiohttp.ClientSession(headers=self.headers)
+        self._session = session
         self._has_setup = True
 
         try:
