@@ -114,7 +114,7 @@ class Route:
         **kwargs: Unpack[APIRequestKwargs],
     ) -> None:
         self.params: ParamMappingT = dict(kwargs.pop("params", {}))
-        self.json: Any = kwargs.get("json", {})
+        self.json: dict[str, Any] = kwargs.get("json") or kwargs.get("data", {})
         self.headers: dict[str, str] = kwargs.get("headers", {})
         self.token_for: str = str(kwargs.get("token_for", ""))
         self.no_app = no_app
@@ -202,6 +202,9 @@ class Route:
 
     def update_headers(self, headers: dict[str, str]) -> None:
         self.headers.update(headers)
+
+    def update_data(self, data: dict[str, Any]) -> None:
+        self.json.update(data)
 
     def clear_auth(self) -> None:
         self.headers.pop("Authorization", "")
