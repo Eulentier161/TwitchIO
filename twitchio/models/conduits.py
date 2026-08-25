@@ -23,13 +23,13 @@ SOFTWARE.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Unpack
+from typing import TYPE_CHECKING, Self, Unpack
 
 from .base import BaseModel
 
 
 if TYPE_CHECKING:
-    from ..types_.eventsub import ConduitData
+    from ..types_.eventsub import ConduitData, ShardData
     from ..types_.responses import UpdateConduitsShardsError, UpdateConduitsShardsResponseT
 
 
@@ -43,6 +43,27 @@ class Conduit(BaseModel):
         self._id = data["id"]
         self._shard_count = data["shard_count"]
 
+    def __repr__(self) -> str:
+        return f"Conduit(id={self._id}, shard_count={self._shard_count})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Conduit):
+            return NotImplemented
+
+        return other._id == self._id
+
+    def __hash__(self) -> int:
+        return hash(self._id)
+
+    def __int__(self) -> int:
+        return self._shard_count
+
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, Conduit):
+            return NotImplemented
+
+        return self._shard_count > other._shard_count
+
     @property
     def id(self) -> str:
         return self._id
@@ -51,26 +72,46 @@ class Conduit(BaseModel):
     def shard_count(self) -> int:
         return self._shard_count
 
-    async def fetch_shards(self) -> list[ConduitShard]: ...
+    async def update(self) -> Self:
+        resp = await self._http._get_conduits()
 
-    async def delete(self) -> None: ...
+        for conduit in resp["data"]:
+            if conduit["id"] == self._id:
+                self._shard_count = conduit["shard_count"]
 
-    async def update(self, count: int, /) -> None:
+        return self
+
+    # TODO: Limit / status
+    async def fetch_shards(self) -> list[ConduitShard]:
+        shards = [ConduitShard(**resp) async for resp in self._http._get_conduit_shards(conduit_id=self._id)]
+        return shards
+
+    async def delete(self) -> None:
+        await self._http.delete_conduit(id=self._id)
+
+    async def scale(self, count: int, /) -> None:
         if not 1 <= count <= 20_000:
             raise ValueError("Provided shard count is not within limits. Conduit shard count must be between 1 and 20_000.")
 
         await self._http.update_conduits(id=self._id, shard_count=count)
+        self._shard_count = count
 
     async def update_shards(self) -> ...: ...
 
 
+# TODO: ...
 class ConduitShard(BaseModel):
-    __slots__ = ()
+    __slots__ = ("id", "status", "transport")
+
+    def __init__(self, **data: Unpack[ShardData]) -> None:
+        self.id = data["id"]
+        self.status = data["status"]
+        self.transport = data["transport"]  # TODO: ...
 
 
 class UpdatedShardPayload(BaseModel):
     __slots__ = ("errors", "shards")
 
     def __init__(self, **data: Unpack[UpdateConduitsShardsResponseT]) -> None:
-        self.shards: list[ConduitShard] = [ConduitShard(**i, http_=self._http) for i in data["data"]]
+        self.shards: list[ConduitShard] = [ConduitShard(**i, http_=self._http) for i in data["data"]]  # type: ignore[arg-type]
         self.errors: list[UpdateConduitsShardsError] = data["errors"]
