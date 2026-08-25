@@ -1411,6 +1411,7 @@ class ShardUpdateTransport(TypedDict):
 
 class ShardUpdateRequest(TypedDict):
     id: str
+    status: ShardStatus
     transport: ShardUpdateTransport
 
 
