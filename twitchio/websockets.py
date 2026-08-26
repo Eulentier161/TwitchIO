@@ -228,6 +228,9 @@ class WebsocketManager:
         self._sockets.pop(socket.session_id, None)
         await socket.close()
 
+        if socket._shard_id and socket._conduit_id:
+            self._disconnected.add(socket)
+
         while True:
             error: BaseException | None = None
 
@@ -243,6 +246,7 @@ class WebsocketManager:
             retries -= 1
             if retries <= 0:
                 LOGGER.warning("Unable to reconnect %r. Maximum retries exceeded.", socket)
+                self._disconnected.discard(socket)
                 return
 
             retry = socket._backoff.calculate()
