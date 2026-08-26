@@ -27,7 +27,8 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import Callable, Coroutine
+from collections import defaultdict
+from collections.abc import Callable, Coroutine, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Self, cast
 
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         RevocationMessage,
         WelcomeMessage,
     )
+    from twitchio.types_.requests import UpdateConduitsShardsShardT
 
     from .clients import Client
 
@@ -102,6 +104,7 @@ class WebsocketManager:
     def __init__(self, client: Client, /, *, keepalive_timeout: float = MIN_KEEP_ALIVE) -> None:
         self._client = client
         self._sockets: dict[str, Websocket] = {}
+        self._disconnected: set[Websocket] = set()
         self._tasks: set[asyncio.Task[None]] = set()
         self._keepalive = int(min(max(keepalive_timeout, MIN_KEEP_ALIVE), MAX_KEEP_ALIVE))
         self._shutdown: bool = False
@@ -111,6 +114,7 @@ class WebsocketManager:
             "session_welcome": self._dispatch_session_welcome,
             "revocation": self._dispatch_revocation,
         }
+        self._conduit_handler_task = asyncio.create_task(self._conduit_loss_handler())
 
     async def __aenter__(self) -> Self:
         return self
@@ -124,6 +128,48 @@ class WebsocketManager:
 
     def get_socket(self, session_id: str, /) -> Websocket | None:
         return self._sockets.get(session_id)
+
+    async def _conduit_loss_handler(self) -> ...:
+        wait = MIN_KEEP_ALIVE // 2
+
+        while True:
+            await asyncio.sleep(wait)
+            if not self._disconnected:
+                continue
+
+            sockets = self._disconnected.copy()
+            to_batch: dict[str, list[Websocket]] = defaultdict(list)
+
+            for socket in sockets:
+                if socket._shard_id is None or socket._conduit_id is None:
+                    self._disconnected.discard(socket)
+                    continue
+
+                # We have to allow the socket to re-establish it's connection and receive a session...
+                if not socket.is_open or not socket.is_ready:
+                    continue
+
+                to_batch[socket._conduit_id].append(socket)
+                self._disconnected.discard(socket)
+
+            if not to_batch:
+                continue
+
+            task = asyncio.create_task(self._reassociate_shards(to_batch))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _reassociate_shards(self, batched: Mapping[str, list[Websocket]]) -> ...:
+        http = self._client.http
+
+        for conduit_id, sockets in batched.items():
+            to_send: list[UpdateConduitsShardsShardT] = [
+                {"id": str(s._shard_id), "transport": {"session_id": str(s.session_id), "method": "websocket"}}
+                for s in sockets
+            ]
+
+            # TODO: Error handling...
+            await http._update_conduit_shards(conduit_id=conduit_id, shards=to_send)
 
     async def _handle_reconnect(self, socket: Websocket, listener: WebsocketFrame, *, error: Exception | None) -> None:
         """Attempts to reconnect a Websocket after it's underlying transport was disconnected.
@@ -205,11 +251,17 @@ class WebsocketManager:
 
         LOGGER.info("%r has successfully re-connected as %r.", socket, new)
 
-    async def open_socket(self, *, shard_id: int | None = None, url: str = MISSING) -> Websocket:
+    async def open_socket(
+        self,
+        *,
+        shard_id: int | None = None,
+        url: str = MISSING,
+        conduit_id: str | None = None,
+    ) -> Websocket:
         if self._shutdown:
             raise WebsocketException("WebsocketManager is closed or closing. Cannot open a new socket connection.")
 
-        ws = Websocket(self, shard_id=shard_id)
+        ws = Websocket(self, shard_id=shard_id, conduit_id=conduit_id)
         await ws.open(keepalive=self._keepalive, uri=url)
 
         try:
@@ -237,6 +289,8 @@ class WebsocketManager:
 
         This method also cancels all currently processing tasks.
         """
+        LOGGER.debug("Gracefully closing WebsocketManager.")
+
         if self._shutdown:
             return
 
@@ -248,7 +302,8 @@ class WebsocketManager:
         for task in self._tasks:
             task.cancel()
 
-        # TODO: logging...
+        if self._conduit_handler_task:
+            self._conduit_handler_task.cancel()
 
     def _dispatch_notification(self, socket: Websocket, *, data: NotificationMessage, received_at: float) -> None: ...
 
@@ -259,8 +314,19 @@ class WebsocketManager:
     def _dispatch_session_welcome(self, socket: Websocket, *, data: WelcomeMessage, received_at: float) -> None:
         LOGGER.debug("Received 'session_welcome' on %r: %s", socket, data)
 
+        original = socket._session_id
         socket._session_id = data["payload"]["session"]["id"]
         socket.set_ready()
+
+        if original is None:
+            return
+
+        if socket._shard_id is not None and socket._conduit_id is not None:
+            # TODO: ...
+            ...
+        else:
+            # TODO: ... Re-subscribe to ES Subscriptions
+            ...
 
     def _dispatch_revocation(self, socket: Websocket, *, data: RevocationMessage, received_at: float) -> None: ...
 
@@ -367,6 +433,7 @@ class Websocket:
         "_backoff",
         "_channel_task",
         "_closing",
+        "_conduit_id",
         "_keepalive",
         "_keepalive_task",
         "_last_ack",
@@ -379,12 +446,13 @@ class Websocket:
         "container",
     )
 
-    def __init__(self, manager: WebsocketManager, *, shard_id: int | None = None) -> None:
+    def __init__(self, manager: WebsocketManager, *, shard_id: int | None = None, conduit_id: str | None = None) -> None:
         self.container: WSContainer = WSContainer(manager=manager, listener=None, transport=None)
         self._backoff = Backoff()
 
         self._session_id: str | None = None
         self._shard_id = shard_id
+        self._conduit_id = conduit_id
         self._ready_event = asyncio.Event()
         self._last_ack: float = time.monotonic()
         self._keepalive: int = manager._keepalive
@@ -398,7 +466,7 @@ class Websocket:
         self._opened.set()
 
     def __repr__(self) -> str:
-        name = "Conduit" if self._shard_id is not None else "Websocket"
+        name = "ConduitSocket" if self._shard_id is not None else "Websocket"
         return f"{name}(session_id={self._session_id}, shard_id={self._shard_id})"
 
     @property
