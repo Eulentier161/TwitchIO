@@ -10,7 +10,8 @@ Changelog
 =======
 - twitchio.eventsub
     - Bug fixes
-        - :attr:`~twitchio.ChatMessageFragment.gif` now correctly returns an optional :class:`~twitchio.ChatMessageGif``
+        - :attr:`~twitchio.ChatMessageFragment.gif` now correctly returns an optional :class:`~twitchio.ChatMessageGif`
+        - :attr:`~twitchio.ChatMessageGif.id` uses correct key for `id`. This was due to incorrect Twitch docs.
 
 3.3.1 - 3.3.2
 ==============

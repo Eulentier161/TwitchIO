@@ -1269,7 +1269,7 @@ class ChatMessageGif:
     __slots__ = ("asset", "id")
 
     def __init__(self, data: ChatMessageGifData, *, http: HTTPClient) -> None:
-        self.id: str = data["gif_id"]
+        self.id: str = data["id"]
         self.asset: Asset = Asset(data["url"], http=http)
 
 
