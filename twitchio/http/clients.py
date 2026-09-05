@@ -336,7 +336,7 @@ class HTTPClient:
         return self.build_model(Conduit, data=resp)
 
     async def _create_conduits(self, **kwargs: Unpack[CreateConduitsRequestT]) -> CreateConduitsResponseT:
-        route = Route("POST", "eventsub/conduits")
+        route = Route("POST", "eventsub/conduits", params=kwargs)
         return await self.request_json(route)
 
     async def create_conduits(self, **kwargs: Unpack[CreateConduitsRequestT]) -> list[Conduit]:
